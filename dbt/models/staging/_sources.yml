@@ -1,0 +1,234 @@
+version: 2
+
+sources:
+
+  # ──────────────────────────────────────────────────────────
+  # PostgreSQL Core Banking (via Airflow ingestion)
+  # ──────────────────────────────────────────────────────────
+  - name: core_banking
+    description: >
+      Core banking data ingested from PostgreSQL via Airflow daily batch.
+      Source: PostgreSQL 15 on Docker/GCE.
+    database: "{{ env_var('GCP_PROJECT_ID') }}"
+    schema: "{{ var('raw_core_banking_dataset') }}"
+    loader: airflow
+    loaded_at_field: updated_at
+    freshness:
+      warn_after: {count: 25, period: hour}
+      error_after: {count: 49, period: hour}
+
+    tables:
+      - name: customers
+        description: "Customer master data with PII. Handle with care — column-level security in BQ."
+        columns:
+          - name: customer_id
+            description: "Surrogate primary key"
+            tests: [not_null, unique]
+          - name: customer_uuid
+            tests: [not_null, unique]
+          - name: full_name
+            tests: [not_null]
+          - name: national_id
+            tests: [not_null, unique]
+          - name: gender
+            tests:
+              - accepted_values:
+                  values: ["M", "F"]
+          - name: customer_segment
+            tests:
+              - accepted_values:
+                  values: ["retail", "priority", "premier", "private", "sme", "corporate"]
+          - name: kyc_status
+            tests:
+              - accepted_values:
+                  values: ["pending", "verified", "rejected", "expired"]
+          - name: created_at
+            tests: [not_null]
+          - name: updated_at
+            tests: [not_null]
+
+      - name: accounts
+        description: "Bank accounts — savings, checking, loans, credit cards."
+        columns:
+          - name: account_id
+            tests: [not_null, unique]
+          - name: account_number
+            tests: [not_null, unique]
+          - name: customer_id
+            tests:
+              - not_null
+              - relationships:
+                  to: source('core_banking', 'customers')
+                  field: customer_id
+          - name: account_status
+            tests:
+              - accepted_values:
+                  values: ["active", "dormant", "blocked", "closed", "pending"]
+          - name: balance
+            tests: [not_null]
+          - name: currency
+            tests:
+              - accepted_values:
+                  values: ["IDR", "USD", "SGD", "EUR"]
+
+      - name: branches
+        description: "Bank branch reference data."
+        columns:
+          - name: branch_id
+            tests: [not_null, unique]
+          - name: branch_code
+            tests: [not_null, unique]
+          - name: branch_type
+            tests:
+              - accepted_values:
+                  values: ["main", "regional", "sub", "atm_center"]
+
+      - name: employees
+        description: "Bank employee reference data."
+        columns:
+          - name: employee_id
+            tests: [not_null, unique]
+          - name: employee_code
+            tests: [not_null, unique]
+
+      - name: loan_applications
+        description: "Loan application lifecycle. Tracks from submission to disbursement."
+        columns:
+          - name: application_id
+            tests: [not_null, unique]
+          - name: application_number
+            tests: [not_null, unique]
+          - name: customer_id
+            tests:
+              - not_null
+              - relationships:
+                  to: source('core_banking', 'customers')
+                  field: customer_id
+          - name: application_status
+            tests:
+              - accepted_values:
+                  values: ["submitted", "under_review", "approved", "rejected", "disbursed", "cancelled", "withdrawn"]
+
+      - name: credit_scores
+        description: "Customer credit score history. Used for risk assessment."
+        columns:
+          - name: score_id
+            tests: [not_null, unique]
+          - name: score_value
+            tests:
+              - not_null
+              - dbt_utils.accepted_range:
+                  min_value: 300
+                  max_value: 850
+          - name: score_band
+            tests:
+              - accepted_values:
+                  values: ["poor", "fair", "good", "very_good", "exceptional"]
+
+      - name: product_types
+        description: "Banking product catalog."
+        columns:
+          - name: product_type_id
+            tests: [not_null, unique]
+          - name: product_code
+            tests: [not_null, unique]
+          - name: product_category
+            tests:
+              - accepted_values:
+                  values: ["savings", "checking", "loan", "credit_card", "deposit", "investment"]
+
+  # ──────────────────────────────────────────────────────────
+  # MySQL Transaction System (via Airflow ingestion)
+  # ──────────────────────────────────────────────────────────
+  - name: transactions
+    description: >
+      Transaction data ingested from MySQL via Airflow daily batch.
+      Source: MySQL 8.0 on Docker/GCE.
+      Table is partitioned by transaction_date for performance.
+    database: "{{ env_var('GCP_PROJECT_ID') }}"
+    schema: "{{ var('raw_transactions_dataset') }}"
+    loader: airflow
+    loaded_at_field: updated_at
+    freshness:
+      warn_after: {count: 25, period: hour}
+      error_after: {count: 49, period: hour}
+
+    tables:
+      - name: transactions
+        description: "All banking transactions. Core fact table for financial analytics."
+        columns:
+          - name: transaction_id
+            tests: [not_null, unique]
+          - name: transaction_uuid
+            tests: [not_null, unique]
+          - name: account_id
+            tests: [not_null]
+          - name: customer_id
+            tests: [not_null]
+          - name: amount
+            tests:
+              - not_null
+              - dbt_utils.accepted_range:
+                  min_value: 0
+                  inclusive: false
+          - name: currency
+            tests:
+              - accepted_values:
+                  values: ["IDR", "USD", "SGD", "EUR"]
+          - name: transaction_status
+            tests:
+              - accepted_values:
+                  values: ["pending", "completed", "failed", "reversed"]
+          - name: transaction_date
+            tests: [not_null]
+          - name: transaction_at
+            tests: [not_null]
+
+      - name: merchants
+        description: "Merchant reference data."
+        columns:
+          - name: merchant_id
+            tests: [not_null, unique]
+          - name: risk_level
+            tests:
+              - accepted_values:
+                  values: ["normal", "elevated", "high"]
+
+      - name: fraud_flags
+        description: "ML-generated fraud signals. Requires analyst review."
+        columns:
+          - name: flag_id
+            tests: [not_null, unique]
+          - name: transaction_id
+            tests:
+              - not_null
+              - relationships:
+                  to: source('transactions', 'transactions')
+                  field: transaction_id
+          - name: severity
+            tests:
+              - accepted_values:
+                  values: ["low", "medium", "high", "critical"]
+          - name: confidence_score
+            tests:
+              - not_null
+              - dbt_utils.accepted_range:
+                  min_value: 0.0
+                  max_value: 1.0
+
+      - name: transaction_types
+        columns:
+          - name: type_id
+            tests: [not_null, unique]
+          - name: type_code
+            tests: [not_null, unique]
+
+      - name: payment_methods
+        columns:
+          - name: method_id
+            tests: [not_null, unique]
+
+      - name: merchant_categories
+        columns:
+          - name: mcc_code
+            tests: [not_null, unique]

@@ -1,0 +1,126 @@
+name: banking_dbt
+version: "1.7.0"
+config-version: 2
+
+profile: banking_bigquery
+
+model-paths:   ["models"]
+analysis-paths: ["analyses"]
+test-paths:    ["tests"]
+seed-paths:    ["seeds"]
+macro-paths:   ["macros"]
+snapshot-paths: ["snapshots"]
+
+target-path: "target"
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+# ─── Model configs ──────────────────────────────────────────
+models:
+  banking_dbt:
+
+    # ── Staging Layer ─────────────────────────────────────
+    staging:
+      +materialized: view
+      +schema: staging
+      +tags: ["staging"]
+      +meta:
+        owner: "data-engineering"
+        tier: "staging"
+      core_banking:
+        +tags: ["core_banking", "postgres_source"]
+      transactions:
+        +tags: ["transactions", "mysql_source"]
+
+    # ── Intermediate Layer ────────────────────────────────
+    intermediate:
+      +materialized: ephemeral   # Cost optimization — no BQ table created
+      +schema: intermediate
+      +tags: ["intermediate"]
+      +meta:
+        owner: "data-engineering"
+        tier: "intermediate"
+
+    # ── Marts Layer ───────────────────────────────────────
+    marts:
+      +materialized: table
+      +schema: marts
+      +tags: ["marts"]
+      +meta:
+        owner: "analytics"
+        tier: "mart"
+
+      customer:
+        +schema: marts_customer
+        +tags: ["customer_domain"]
+        mart_customer_360:
+          +materialized: table
+          +partition_by:
+            field: updated_date
+            data_type: date
+            granularity: day
+          +cluster_by: ["customer_segment", "kyc_status"]
+          +tags: ["customer_360"]
+
+      risk:
+        +schema: marts_risk
+        +tags: ["risk_domain"]
+        mart_fraud_analytics:
+          +materialized: table
+          +partition_by:
+            field: transaction_date
+            data_type: date
+            granularity: day
+          +cluster_by: ["severity", "flag_type"]
+        mart_credit_risk:
+          +materialized: table
+          +partition_by:
+            field: snapshot_date
+            data_type: date
+            granularity: day
+
+      finance:
+        +schema: marts_finance
+        +tags: ["finance_domain"]
+        mart_transaction_analytics:
+          +materialized: table
+          +partition_by:
+            field: transaction_date
+            data_type: date
+            granularity: day
+          +cluster_by: ["channel", "transaction_status"]
+
+# ─── Snapshots (SCD Type 2) ─────────────────────────────────
+snapshots:
+  banking_dbt:
+    +target_schema: snapshots
+    +strategy: timestamp
+    +updated_at: updated_at
+    +invalidate_hard_deletes: true
+
+# ─── Seeds ──────────────────────────────────────────────────
+seeds:
+  banking_dbt:
+    +schema: seeds
+    +quote_columns: false
+
+# ─── Variables ──────────────────────────────────────────────
+vars:
+  # Source datasets (override per target in profiles.yml)
+  raw_core_banking_dataset: "raw_core_banking"
+  raw_transactions_dataset: "raw_transactions"
+
+  # Data quality thresholds
+  max_null_rate_pct: 5.0
+  max_duplicate_rate_pct: 0.1
+
+  # Business logic
+  fraud_high_confidence_threshold: 0.80
+  npl_dpd_threshold: 90
+  dormant_days_threshold: 180
+
+# ─── Query comments (for BigQuery audit trails) ─────────────
+query-comment:
+  comment: "/* dbt={{ invocation_id }} model={{ node.name }} target={{ target.name }} */"
+  append: true
