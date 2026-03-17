@@ -50,5 +50,4 @@ monitoring/great_expectations/uncommitted/
 *.ipynb
 Makefile
 credentials/service-account.json
-Dockerfile
 image/
