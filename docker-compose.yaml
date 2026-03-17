@@ -455,6 +455,7 @@ services:
   #   build:
   #     context: ./data-generator-updated
   #     dockerfile: Dockerfile
+  #   image: ghcr.io/21voidx/banking-data-generator:v1.0.0
   #   container_name: banking-data-generator
   #   environment:
   #     POSTGRES_HOST: postgres-core
