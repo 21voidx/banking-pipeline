@@ -1,0 +1,46 @@
+banking_bigquery:
+  target: dev
+
+  outputs:
+
+    # ── Development (local) ─────────────────────────────────
+    dev:
+      type: bigquery
+      method: service-account
+      project: "{{ env_var('GCP_PROJECT_ID') }}"
+      dataset: dev_banking          # Developer-specific dataset prefix
+      location: "{{ env_var('BQ_LOCATION', 'US') }}"
+      keyfile: "{{ env_var('GOOGLE_APPLICATION_CREDENTIALS') }}"
+      threads: 4
+      timeout_seconds: 300
+      retries: 1
+      priority: interactive
+      maximum_bytes_billed: 10000000000   # 10 GB safety limit for dev
+
+    # ── CI/CD ───────────────────────────────────────────────
+    ci:
+      type: bigquery
+      method: oauth
+      project: "{{ env_var('GCP_PROJECT_ID') }}"
+      dataset: ci_{{ env_var('CI_PIPELINE_ID', 'US') }}
+      location: "{{ env_var('BQ_LOCATION', 'asia-southeast2') }}"
+      threads: 8
+      timeout_seconds: 300
+      retries: 2
+      priority: interactive
+      maximum_bytes_billed: 50000000000   # 50 GB
+
+    # ── Production ──────────────────────────────────────────
+    prod:
+      type: bigquery
+      method: service-account
+      project: "{{ env_var('GCP_PROJECT_ID') }}"
+      dataset: staging              # Base dataset (overridden per model)
+      location: "{{ env_var('BQ_LOCATION', 'US') }}"
+      keyfile: "{{ env_var('GOOGLE_APPLICATION_CREDENTIALS') }}"
+      threads: 16
+      timeout_seconds: 1800         # 30 min max for full mart rebuilds
+      retries: 3
+      priority: interactive
+      maximum_bytes_billed: 1000000000000  # 1 TB guard rail
+      job_retry_deadline_seconds: 3600

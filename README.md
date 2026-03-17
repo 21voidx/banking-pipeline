@@ -109,25 +109,27 @@ banking-data-platform/
 │   ├── data-dictionary.md             # All table definitions
 │   └── cdc-roadmap.md                 # Phase 2 CDC planning
 │
-├── data-generator/                    # Synthetic banking data
+├── data-generator/                    # Synthetic banking data generator
 │   ├── Dockerfile
 │   ├── requirements.txt
-│   ├── config/settings.py
+│   ├── main.py                        # Entry point: --mode full/incremental/truncate
+│   ├── config/
+│   │   └── settings.py                # Env var config + date range settings
 │   ├── generators/
-│   │   ├── core_banking/              # Postgres generators
-│   │   │   ├── customers.py
-│   │   │   ├── accounts.py
-│   │   │   ├── branches.py
-│   │   │   ├── employees.py
-│   │   │   └── loan_applications.py
+│   │   ├── db_connections.py          # Postgres & MySQL connection helpers
+│   │   ├── core_banking/              # PostgreSQL generators
+│   │   │   ├── customers.py           # Indonesian customer profiles (KYC, NIK)
+│   │   │   ├── accounts.py            # Savings, checking, loan, credit card accounts
+│   │   │   ├── branches.py            # Bank branch master data
+│   │   │   ├── employees.py           # Employee profiles per branch
+│   │   │   └── loan_applications.py   # Loan lifecycle (submitted → disbursed)
 │   │   └── transaction/               # MySQL generators
-│   │       ├── transactions.py
-│   │       ├── merchants.py
-│   │       └── fraud_flags.py
-│   ├── schemas/
-│   │   ├── postgres_schema.sql        # DDL with WAL config
-│   │   └── mysql_schema.sql           # DDL with binlog config
-│   └── main.py
+│   │       ├── transactions.py        # IDR transactions with realistic patterns
+│   │       ├── merchants.py           # Merchant profiles with MCC codes
+│   │       └── fraud_flags.py         # Fraud detection flags (0.8% rate)
+│   └── schemas/
+│       ├── postgres_schema.sql        # DDL with WAL config + WIB timestamps
+│       └── mysql_schema.sql           # DDL with binlog config + WIB timestamps
 │
 ├── ingestion/
 │   ├── trino/
@@ -183,6 +185,206 @@ banking-data-platform/
 ```
 
 ---
+
+
+---
+
+## 🧪 Data Generator
+
+Synthetic data generator yang menghasilkan data perbankan Indonesia realistis untuk mengisi PostgreSQL (Core Banking) dan MySQL (Transaction System) sebagai source data pipeline.
+
+### Fitur Utama
+
+- **Timezone WIB** — Semua timestamp (`created_at`, `updated_at`, `transaction_at`, dll.) menggunakan Asia/Jakarta (UTC+7), bukan UTC
+- **Controlled date range** — Full load dan incremental load menggunakan rentang tanggal yang dapat dikonfigurasi, bukan `NOW()` real-time
+- **Dua mode operasi** — `full` untuk initial load historis, `incremental` untuk simulasi daily load
+- **Data Indonesia realistis** — NIK 16 digit, nama WNI, provinsi, kota, mata uang IDR, pola transaksi QRIS/mobile banking
+- **Deterministik** — `SEED=42` menghasilkan data yang sama setiap kali dijalankan (reproducible)
+- **Fraud rate realistis** — 0.8% transaksi di-flag sebagai fraud, sesuai industri perbankan
+
+### Date Range Design
+
+```
+FULL LOAD
+─────────────────────────────────────────────────────────────────
+  2025-01-01                                          2025-12-31
+      │◄──────────── data tersebar merata ──────────────────►│
+      │                                                       │
+      │  transactions      → spread across full year          │
+      │  customers         → onboarded throughout 2025        │
+      │  accounts          → opened throughout 2025           │
+      │  loan_applications → submitted throughout 2025        │
+      │                                                       │
+      │  branches    → pre-2025 (bank sudah lama berdiri)     │
+      │  employees   → pre-2025 (hire date bisa lebih lama)   │
+      │  merchants   → pre-2025 (merchant sudah existing)     │
+
+INCREMENTAL LOAD (daily, mulai 2026-01-02)
+─────────────────────────────────────────────────────────────────
+  2026-01-02   2026-01-03   2026-01-04   ...
+      │             │             │
+   1 hari       1 hari        1 hari     ← tiap run = 1 hari data baru
+   ~333 txn    ~333 txn     ~333 txn     ← (num_transactions / 30)
+```
+
+### Modes
+
+| Mode | Deskripsi | Kapan Digunakan |
+|------|-----------|-----------------|
+| `full` | Generate semua tabel dari nol, data tersebar di `FULL_RANGE_START` s/d `FULL_START_DATE` | Initial setup, reset environment |
+| `incremental` | Tambah data baru untuk 1 hari (customers baru, transaksi harian, loan baru) | Daily pipeline testing, Airflow DAG |
+| `truncate` | Hapus semua generated data *(belum diimplementasi)* | Reset data |
+
+### Cara Menjalankan
+
+#### Via Docker (recommended)
+
+```bash
+# Full load — default range 2025-01-01 s/d 2025-12-31
+docker compose run --rm data-generator python main.py --mode full
+
+# Full load dengan range custom
+docker compose run --rm data-generator \
+  python main.py --mode full \
+  --range-start 2025-01-01 \
+  --start-date 2025-12-31
+
+# Incremental load di tanggal custom (tidak perlu tunggu hari berikutnya)
+docker compose run --rm data-generator \
+  python main.py --mode incremental \
+  --incremental-date 2026-01-02
+```
+
+#### Via Environment Variables (untuk Airflow DAG)
+
+```bash
+# Set via env var, cocok untuk DockerOperator di Airflow
+FULL_RANGE_START=2025-01-01 \
+FULL_START_DATE=2025-12-31 \
+python main.py --mode full
+
+# Incremental dengan tanggal dari Airflow execution_date
+INCREMENTAL_DATE={{ ds }} python main.py --mode incremental
+```
+
+#### Contoh Airflow DockerOperator
+
+```python
+from airflow.providers.docker.operators.docker import DockerOperator
+
+incremental_load = DockerOperator(
+    task_id="incremental_data_load",
+    image="banking-data-generator:latest",
+    command="python main.py --mode incremental --incremental-date {{ ds }}",
+    environment={
+        "POSTGRES_HOST": "postgres-core",
+        "MYSQL_HOST": "mysql-txn",
+        # ... credentials dari Airflow connections
+    },
+    network_mode="banking-net",
+)
+```
+
+### Environment Variables
+
+| Variable | Default | Deskripsi |
+|----------|---------|-----------|
+| `POSTGRES_HOST` | `localhost` | PostgreSQL host |
+| `POSTGRES_PORT` | `5432` | PostgreSQL port |
+| `POSTGRES_DB` | `core_banking` | Database name |
+| `POSTGRES_USER` | `banking_core` | Username |
+| `POSTGRES_PASSWORD` | *(required)* | Password |
+| `MYSQL_HOST` | `localhost` | MySQL host |
+| `MYSQL_PORT` | `3306` | MySQL port |
+| `MYSQL_DB` | `transaction_db` | Database name |
+| `MYSQL_USER` | `banking_txn` | Username |
+| `MYSQL_PASSWORD` | *(required)* | Password |
+| `NUM_CUSTOMERS` | `10000` | Jumlah customer yang di-generate |
+| `NUM_TRANSACTIONS` | `100000` | Jumlah transaksi untuk full load |
+| `NUM_MERCHANTS` | `500` | Jumlah merchant |
+| `NUM_BRANCHES` | `50` | Jumlah cabang |
+| `NUM_EMPLOYEES` | `200` | Jumlah karyawan |
+| `SEED` | `42` | Random seed (reproducibility) |
+| `BATCH_SIZE` | `500` | Ukuran batch insert |
+| `FULL_RANGE_START` | `2025-01-01` | Tanggal **awal** range full load |
+| `FULL_START_DATE` | `2025-12-31` | Tanggal **akhir** range full load |
+| `INCREMENTAL_DATE` | `2026-01-02` | Tanggal simulasi incremental load |
+| `TZ` | `Asia/Jakarta` | Timezone container (set di docker-compose) |
+
+### Data yang Dihasilkan
+
+#### PostgreSQL — Core Banking (`core_banking`)
+
+| Tabel | Volume (default) | Deskripsi |
+|-------|-----------------|-----------|
+| `branches` | 50 rows | Cabang bank di kota-kota Indonesia |
+| `employees` | 200 rows | Karyawan per cabang (teller, CS, RM, dll.) |
+| `product_types` | 7 rows | Produk perbankan (tabungan, giro, KPR, KTA, CC) |
+| `customers` | 10.000 rows | Profil nasabah dengan NIK, KYC status, segmen |
+| `accounts` | ~15.000 rows | Rekening nasabah (1–3 akun per nasabah) |
+| `loan_applications` | ~2.000 rows | Aplikasi pinjaman dengan lifecycle lengkap |
+
+#### MySQL — Transaction System (`transaction_db`)
+
+| Tabel | Volume (default) | Deskripsi |
+|-------|-----------------|-----------|
+| `transaction_types` | 8 types | DEBIT_PURCHASE, ATM_WITHDRAWAL, QRIS_PAYMENT, dll. |
+| `payment_methods` | 6 methods | MOBILE_BANKING, DEBIT_CARD, QRIS, dll. |
+| `merchant_categories` | 15 MCC | ISO 18245 Merchant Category Codes |
+| `merchants` | 500 rows | Merchant dengan MCC, kota, risk level |
+| `transactions` | 100.000 rows | Transaksi IDR dengan channel, status, fee |
+| `fraud_flags` | ~800 rows | Fraud flags (0.8% rate, 4 severity levels) |
+
+### Distribusi Data Realistis
+
+**Transaction channels:**
+```
+mobile banking  40%  │████████████████████
+ATM             20%  │██████████
+web banking     15%  │████████
+POS             15%  │████████
+QRIS             5%  │███
+branch           5%  │███
+```
+
+**Transaction types (IDR):**
+```
+DEBIT_PURCHASE    30%  │  Rp 10.000 – Rp 5.000.000
+CREDIT_PURCHASE   10%  │  Rp 50.000 – Rp 25.000.000
+ATM_WITHDRAWAL    15%  │  Rp 100.000 – Rp 3.000.000
+TRANSFER_OUT      15%  │  Rp 50.000 – Rp 50.000.000
+TRANSFER_IN       12%  │  Rp 50.000 – Rp 50.000.000
+SALARY_CREDIT      5%  │  Rp 3.000.000 – Rp 50.000.000
+BILL_PAYMENT       8%  │  Rp 50.000 – Rp 5.000.000
+QRIS_PAYMENT       5%  │  Rp 5.000 – Rp 500.000
+```
+
+**Transaction status:**
+```
+completed  95%  │  fraud_flags rate: 0.8% dari completed
+failed      3%  │  severity: low 40% / medium 35% / high 18% / critical 7%
+pending     1%
+reversed    1%
+```
+
+**Customer segments:**
+```
+retail     70%  │  KYC: verified 85% / pending 8% / rejected 4% / expired 3%
+priority   15%
+premier     8%
+sme         4%
+private     2%
+corporate   1%
+```
+
+### Timestamp Design
+
+Semua timestamp disimpan dalam **WIB (Asia/Jakarta, UTC+7)**. Generator mengirim nilai `created_at` dan `updated_at` secara eksplisit ke database — tidak mengandalkan `DEFAULT NOW()` — sehingga data historis ter-backfill dengan benar sesuai `range_start` s/d `range_end`.
+
+```
+PostgreSQL → TIMESTAMPTZ  → stored as UTC, displayed as WIB (+07)
+MySQL      → DATETIME(6)  → stored as WIB naive string (no tz offset)
+```
 
 ## ⚡ Quick Start (Local Development)
 
@@ -390,4 +592,3 @@ make logs            # Tail logs for all services
 ```
 
 ---
-

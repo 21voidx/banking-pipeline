@@ -1,0 +1,71 @@
+version: 2
+
+models:
+
+  - name: stg_transactions
+    description: "Staged transactions enriched with type and payment method."
+    columns:
+      - name: transaction_id
+        tests: [not_null, unique]
+      - name: transaction_uuid
+        tests: [not_null, unique]
+      - name: account_id
+        tests: [not_null]
+      - name: customer_id
+        tests: [not_null]
+      - name: amount_idr
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              inclusive: false
+      - name: transaction_status
+        tests:
+          - accepted_values:
+              values: ["pending", "completed", "failed", "reversed"]
+      - name: transaction_date
+        tests: [not_null]
+      - name: channel
+        tests:
+          - accepted_values:
+              values: ["mobile", "atm", "web", "pos", "branch", "qris"]
+      - name: amount_direction
+        tests:
+          - accepted_values:
+              values: ["credit", "debit", "unknown"]
+
+  - name: stg_merchants
+    description: "Merchant reference data enriched with MCC category."
+    columns:
+      - name: merchant_id
+        tests: [not_null, unique]
+      - name: risk_level
+        tests:
+          - accepted_values:
+              values: ["normal", "elevated", "high"]
+
+  - name: stg_fraud_flags
+    description: "ML-generated fraud signals. Requires analyst review workflow."
+    columns:
+      - name: flag_id
+        tests: [not_null, unique]
+      - name: transaction_id
+        tests:
+          - not_null
+          - relationships:
+              to: ref('stg_transactions')
+              field: transaction_id
+      - name: severity
+        tests:
+          - accepted_values:
+              values: ["low", "medium", "high", "critical"]
+      - name: confidence_score
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0.0
+              max_value: 1.0
+      - name: review_status
+        tests:
+          - accepted_values:
+              values: ["confirmed_fraud", "false_positive", "reviewed_inconclusive", "pending_review"]

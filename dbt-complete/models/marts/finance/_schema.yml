@@ -1,0 +1,22 @@
+version: 2
+
+models:
+
+  - name: mart_transaction_analytics
+    description: "Daily transaction aggregations by channel, type, and status. Primary finance mart."
+    columns:
+      - name: transaction_date
+        tests: [not_null]
+      - name: channel
+        tests:
+          - accepted_values:
+              values: ["mobile", "atm", "web", "pos", "branch", "qris"]
+      - name: transaction_status
+        tests:
+          - accepted_values:
+              values: ["pending", "completed", "failed", "reversed"]
+      - name: success_rate
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1

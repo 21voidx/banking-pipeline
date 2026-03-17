@@ -1,0 +1,35 @@
+version: 2
+
+models:
+
+  - name: mart_fraud_analytics
+    description: "Fraud flags joined with transaction context, merchant, and customer risk profile."
+    columns:
+      - name: flag_id
+        tests: [not_null, unique]
+      - name: transaction_id
+        tests: [not_null]
+      - name: severity
+        tests:
+          - accepted_values:
+              values: ["low", "medium", "high", "critical"]
+      - name: review_status
+        tests:
+          - accepted_values:
+              values: ["confirmed_fraud", "false_positive", "reviewed_inconclusive", "pending_review"]
+      - name: transaction_date
+        tests: [not_null]
+
+  - name: mart_credit_risk
+    description: "Daily loan portfolio snapshot with DPD buckets and provision estimates."
+    columns:
+      - name: account_id
+        tests: [not_null]
+      - name: snapshot_date
+        tests: [not_null]
+      - name: dpd_bucket
+        tests:
+          - accepted_values:
+              values: ["current", "dpd_1_30", "dpd_31_60", "dpd_61_90", "npl", "unknown"]
+      - name: is_npl
+        tests: [not_null]

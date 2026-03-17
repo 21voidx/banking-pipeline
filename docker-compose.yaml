@@ -451,35 +451,37 @@ services:
   # Data Generator
   # Populates Postgres + MySQL with synthetic data
   # ─────────────────────────────────────────────
-  data-generator:
-    build:
-      context: ./data-generator
-      dockerfile: Dockerfile
-    container_name: banking-data-generator
-    environment:
-      POSTGRES_HOST: postgres-core
-      POSTGRES_PORT: 5432
-      POSTGRES_DB: core_banking
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      MYSQL_HOST: mysql-txn
-      MYSQL_PORT: 3306
-      MYSQL_DB: transaction_db
-      MYSQL_USER: ${MYSQL_USER}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
-      # Volume of data to generate
-      NUM_CUSTOMERS: ${NUM_CUSTOMERS:-1000}
-      NUM_TRANSACTIONS: ${NUM_TRANSACTIONS:-10000}
-      SEED: 42
-      TZ: Asia/Jakarta
-    depends_on:
-      postgres-core:
-        condition: service_healthy
-      mysql-txn:
-        condition: service_healthy
-    networks:
-      - banking-net
-    restart: "no"
+  # data-generator:
+  #   build:
+  #     context: ./data-generator-updated
+  #     dockerfile: Dockerfile
+  #   container_name: banking-data-generator
+  #   environment:
+  #     POSTGRES_HOST: postgres-core
+  #     POSTGRES_PORT: 5432
+  #     POSTGRES_DB: core_banking
+  #     POSTGRES_USER: ${POSTGRES_USER}
+  #     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+  #     MYSQL_HOST: mysql-txn
+  #     MYSQL_PORT: 3306
+  #     MYSQL_DB: transaction_db
+  #     MYSQL_USER: ${MYSQL_USER}
+  #     MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+  #     # Volume of data to generate
+  #     NUM_CUSTOMERS: ${NUM_CUSTOMERS:-1000}
+  #     NUM_TRANSACTIONS: ${NUM_TRANSACTIONS:-10000}
+  #     SEED: 42
+  #     TZ: Asia/Jakarta
+  #     FULL_START_DATE: "2026-03-01"
+  #     # INCREMENTAL_DATE: "2026-03-05"
+  #   depends_on:
+  #     postgres-core:
+  #       condition: service_healthy
+  #     mysql-txn:
+  #       condition: service_healthy
+  #   networks:
+  #     - banking-net
+  #   restart: "no"
 
 volumes:
   postgres-core-data:

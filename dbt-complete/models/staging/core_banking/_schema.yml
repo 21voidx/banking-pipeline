@@ -1,0 +1,143 @@
+version: 2
+
+models:
+
+  - name: stg_customers
+    description: "Staged customers. PII masked in dev/CI. One row per non-deleted customer."
+    columns:
+      - name: customer_id
+        description: "Surrogate primary key"
+        tests: [not_null, unique]
+      - name: customer_uuid
+        tests: [not_null, unique]
+      - name: national_id
+        tests: [not_null, unique]
+      - name: gender
+        tests:
+          - accepted_values:
+              values: ["M", "F"]
+      - name: customer_segment
+        tests:
+          - accepted_values:
+              values: ["retail", "priority", "premier", "private", "sme", "corporate"]
+      - name: kyc_status
+        tests:
+          - accepted_values:
+              values: ["pending", "verified", "rejected", "expired"]
+      - name: risk_rating
+        tests:
+          - accepted_values:
+              values: ["low", "medium", "high", "blacklist"]
+      - name: created_at
+        tests: [not_null]
+      - name: updated_at
+        tests: [not_null]
+      - name: is_deleted
+        tests: [not_null]
+
+  - name: stg_accounts
+    description: "Staged bank accounts with product enrichment. Excludes accounts closed > 1 year ago."
+    columns:
+      - name: account_id
+        tests: [not_null, unique]
+      - name: account_number
+        tests: [not_null, unique]
+      - name: customer_id
+        tests:
+          - not_null
+          - relationships:
+              to: ref('stg_customers')
+              field: customer_id
+      - name: product_category
+        tests:
+          - accepted_values:
+              values: ["savings", "checking", "loan", "credit_card", "deposit", "investment"]
+      - name: account_status
+        tests:
+          - accepted_values:
+              values: ["active", "dormant", "blocked", "closed", "pending"]
+      - name: balance
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+      - name: currency
+        tests:
+          - accepted_values:
+              values: ["IDR", "USD", "SGD", "EUR"]
+
+  - name: stg_branches
+    description: "Active bank branches — reference data."
+    columns:
+      - name: branch_id
+        tests: [not_null, unique]
+      - name: branch_code
+        tests: [not_null, unique]
+      - name: branch_type
+        tests:
+          - accepted_values:
+              values: ["main", "regional", "sub", "atm_center"]
+
+  - name: stg_employees
+    description: "Active bank employees — reference data."
+    columns:
+      - name: employee_id
+        tests: [not_null, unique]
+      - name: employee_code
+        tests: [not_null, unique]
+      - name: branch_id
+        tests:
+          - not_null
+          - relationships:
+              to: ref('stg_branches')
+              field: branch_id
+      - name: role
+        tests:
+          - accepted_values:
+              values: ["teller", "cs", "relationship_manager", "back_office",
+                       "analyst", "branch_manager", "it"]
+
+  - name: stg_loan_applications
+    description: "Loan application lifecycle. Excludes soft-deleted records."
+    columns:
+      - name: application_id
+        tests: [not_null, unique]
+      - name: application_number
+        tests: [not_null, unique]
+      - name: customer_id
+        tests:
+          - not_null
+          - relationships:
+              to: ref('stg_customers')
+              field: customer_id
+      - name: application_status
+        tests:
+          - accepted_values:
+              values: ["submitted", "under_review", "approved", "rejected",
+                       "disbursed", "cancelled", "withdrawn"]
+      - name: requested_amount
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              inclusive: false
+
+  - name: stg_credit_scores
+    description: "Customer credit score history. is_latest_score=true for most recent per customer."
+    columns:
+      - name: score_id
+        tests: [not_null, unique]
+      - name: customer_id
+        tests: [not_null]
+      - name: score_value
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 300
+              max_value: 850
+      - name: score_band
+        tests:
+          - accepted_values:
+              values: ["poor", "fair", "good", "very_good", "exceptional"]
+      - name: is_latest_score
+        tests: [not_null]

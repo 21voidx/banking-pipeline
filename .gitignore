@@ -51,3 +51,4 @@ monitoring/great_expectations/uncommitted/
 Makefile
 credentials/service-account.json
 Dockerfile
+image/

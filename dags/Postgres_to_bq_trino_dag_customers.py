@@ -106,7 +106,39 @@ CLUSTER_FIELDS  = ["address_city", "customer_segment", "kyc_status"] # up to 4 f
 MERGE_KEY       = "customer_id"
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  SCHEMA  — keep in sync with Postgres source
+#  GLOBAL TYPE MAP — tidak perlu diubah saat ganti tabel
+# ══════════════════════════════════════════════════════════════════════════════
+#
+#  Root cause TYPE_MISMATCH: Trino memetakan tipe PG dan BQ secara berbeda.
+#
+#    BQ type    | Trino(BQ) | PG type contoh          | Trino(PG)      | CAST ke
+#    ───────────────────────────────────────────────────────────────────────────
+#    INTEGER    | bigint    | SERIAL, INT4, INT        | integer        | BIGINT
+#    STRING     | varchar   | VARCHAR(N), CHAR(N), UUID| varchar(N)/uuid| VARCHAR
+#    DATE       | date      | DATE                    | date           | — ✓
+#    TIMESTAMP  | timestamp | TIMESTAMPTZ             | timestamp tz   | — ✓
+#    BOOLEAN    | boolean   | BOOLEAN                 | boolean        | — ✓
+#    FLOAT      | double    | FLOAT8                  | double         | — ✓
+#    NUMERIC    | decimal   | NUMERIC                 | decimal        | — ✓
+#
+#  Solusi: satu map global BQ type → Trino CAST yang perlu dipaksa.
+#  Semua kolom bertipe INTEGER di BQ selalu butuh BIGINT,
+#  semua kolom bertipe STRING di BQ selalu butuh VARCHAR — tanpa terkecuali.
+#  Cast redundan (varchar → VARCHAR) aman di Trino, tidak error.
+
+_BQ_TO_TRINO_CAST: dict[str, str] = {
+    "INTEGER": "BIGINT",   # BQ INT64  ↔ PG INT4/SERIAL  → Trino bigint  vs integer
+    "STRING":  "VARCHAR",  # BQ STRING ↔ PG VARCHAR/CHAR/UUID → Trino varchar(unbounded) vs varchar(N)/char/uuid
+    # Tipe di bawah sudah cocok antara Trino(PG) dan Trino(BQ) — tidak perlu CAST:
+    # "DATE":      sudah date  = date
+    # "TIMESTAMP": sudah timestamp with time zone
+    # "BOOLEAN":   sudah boolean
+    # "FLOAT":     sudah double
+    # "NUMERIC":   sudah decimal
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  SCHEMA — ubah ini saat ganti tabel (name, type, mode saja)
 # ══════════════════════════════════════════════════════════════════════════════
 
 SCHEMA_FIELDS = [
@@ -138,7 +170,59 @@ SCHEMA_FIELDS = [
     {"name": "deleted_at",             "type": "TIMESTAMP", "mode": "NULLABLE"},
 ]
 
-_COLUMNS = [f["name"] for f in SCHEMA_FIELDS]
+# ══════════════════════════════════════════════════════════════════════════════
+#  TABLE_COLUMNS — paste kolom di sini saat ganti tabel, pisahkan dengan koma
+# ══════════════════════════════════════════════════════════════════════════════
+#
+#  Cara pakai:
+#    1. Jalankan di psql: \d <table_name>  — copy nama kolom dari output.
+#    2. Atau ambil dari CREATE TABLE statement, baris "name TYPE MODE".
+#    3. Paste di bawah sebagai string — urutan bebas, spasi/newline diabaikan.
+#
+#  Kolom yang tidak ada di SCHEMA_FIELDS akan menyebabkan KeyError saat parse,
+#  sehingga typo terdeteksi lebih awal (fail-fast) sebelum DAG dijalankan.
+
+TABLE_COLUMNS = """
+    customer_id, customer_uuid, full_name, national_id, date_of_birth, gender,
+    marital_status, occupation, income_range, email, phone_primary, phone_secondary,
+    address_street, address_city, address_province, address_postal_code,
+    customer_segment, kyc_status, kyc_verified_at, onboarding_branch_id,
+    acquisition_channel, risk_rating, is_politically_exposed,
+    created_at, updated_at, deleted_at
+"""
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  AUTO-DERIVE — tidak perlu diubah
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Lookup: nama kolom → BQ type  (dipakai untuk resolve cast dari TABLE_COLUMNS)
+_SCHEMA_LOOKUP: dict[str, str] = {f["name"]: f["type"] for f in SCHEMA_FIELDS}
+
+# Parse TABLE_COLUMNS → list nama kolom bersih, fail-fast jika ada typo
+_COLUMNS: list[str] = []
+for _col in TABLE_COLUMNS.replace("\n", ",").split(","):
+    _col = _col.strip()
+    if not _col:
+        continue
+    if _col not in _SCHEMA_LOOKUP:
+        raise ValueError(
+            f"Kolom '{_col}' tidak ditemukan di SCHEMA_FIELDS. "
+            f"Periksa typo atau tambahkan kolom ke SCHEMA_FIELDS terlebih dahulu."
+        )
+    _COLUMNS.append(_col)
+
+# Loop BQ  — plain column names: INSERT target, MERGE clause, SELECT dari CTE
+# Loop Trino — CAST expression: SELECT dari Postgres di CTE ranked
+#   Ada di _BQ_TO_TRINO_CAST → CAST(src.col AS TYPE) AS col   (alias wajib)
+#   Tidak ada                 → src.col                        (tipe sudah cocok)
+_TRINO_COLUMNS: list[str] = [
+    (
+        f"CAST(src.{col} AS {_BQ_TO_TRINO_CAST[_SCHEMA_LOOKUP[col]]}) AS {col}"
+        if _SCHEMA_LOOKUP[col] in _BQ_TO_TRINO_CAST
+        else f"src.{col}"
+    )
+    for col in _COLUMNS
+]
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  AIRFLOW 3.x — Assets (Outlets) for lineage + dataset-triggered DAGs
@@ -179,16 +263,24 @@ def _trino_insert_sql() -> str:
     Override via dag_run.conf (nilai harus dalam WIB):
       { "window_start": "2026-03-11 09:00:00", "window_end": "2026-03-12 09:00:00" }
     """
-    columns  = ",\n        ".join(_COLUMNS)
-    src_cols = ",\n            ".join(f"src.{c}" for c in _COLUMNS)
+    # Loop 1 — INSERT target: plain column names (BigQuery side)
+    insert_cols  = ",\n        ".join(_COLUMNS)
+
+    # Loop 2 — SELECT source: Trino CAST expressions (Postgres side)
+    # Setiap ekspresi sudah memiliki alias eksplisit (CAST(... AS T) AS col / src.col)
+    # sehingga nama kolom di CTE ranked = nama kolom plain (_COLUMNS).
+    trino_exprs  = ",\n            ".join(_TRINO_COLUMNS)
+
+    # SELECT final dari CTE: cukup nama kolom plain (tanpa prefix src.)
+    final_cols   = ", ".join(_COLUMNS)
 
     return f"""
 INSERT INTO {TRINO_BQ_CATALOG}.{BQ_DATASET}.{BQ_TEMP_TABLE} (
-    {columns}
+    {insert_cols}
 )
 WITH ranked AS (
     SELECT
-        {src_cols},
+        {trino_exprs},
         ROW_NUMBER() OVER (
             PARTITION BY src.{MERGE_KEY}
             ORDER BY src.{PARTITION_FIELD} DESC
@@ -199,7 +291,7 @@ WITH ranked AS (
     WHERE src.{PARTITION_FIELD} >= TIMESTAMP '{{{{ dag_run.conf.get("window_start") or data_interval_start.in_timezone("Asia/Jakarta").strftime("%Y-%m-%d %H:%M:%S") }}}}'
       AND src.{PARTITION_FIELD} <  TIMESTAMP '{{{{ dag_run.conf.get("window_end")   or data_interval_end.in_timezone("Asia/Jakarta").strftime("%Y-%m-%d %H:%M:%S") }}}}'
 )
-SELECT {", ".join(_COLUMNS)}
+SELECT {final_cols}
 FROM   ranked
 WHERE  _rn = 1
 """
@@ -350,7 +442,7 @@ default_args = {
 }
 
 with DAG(
-    dag_id="postgres_to_bq_trino_customer",
+    dag_id="postgres_to_bq_trino_customer_v2",
     description="Postgres → BigQuery via Trino cross-catalog (no GCS, no EXTERNAL_QUERY)",
     default_args=default_args,
     schedule=CronDataIntervalTimetable("0 9 * * *", timezone="Asia/Jakarta"),                      # setiap jam 9 pagi

@@ -1,0 +1,48 @@
+version: 2
+
+models:
+
+  - name: mart_customer_360
+    description: "Unified customer profile — banking attributes, transaction behavior, loan exposure, credit score."
+    columns:
+      - name: customer_id
+        tests: [not_null, unique]
+      - name: customer_uuid
+        tests: [not_null, unique]
+      - name: customer_segment
+        tests:
+          - accepted_values:
+              values: ["retail", "priority", "premier", "private", "sme", "corporate"]
+      - name: kyc_status
+        tests:
+          - accepted_values:
+              values: ["pending", "verified", "rejected", "expired"]
+      - name: total_balance_idr
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+      - name: is_dormant
+        tests: [not_null]
+      - name: is_npl_customer
+        tests: [not_null]
+      - name: updated_date
+        tests: [not_null]
+
+  - name: mart_customer_lifetime_value
+    description: "RFM-based CLV segmentation — champions, loyal, at_risk, lost."
+    columns:
+      - name: customer_id
+        tests: [not_null, unique]
+      - name: rfm_score
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 1
+              max_value: 5
+      - name: clv_segment
+        tests:
+          - accepted_values:
+              values: ["champions", "loyal_customers", "potential_loyalists", "at_risk", "lost"]
+      - name: snapshot_date
+        tests: [not_null]
